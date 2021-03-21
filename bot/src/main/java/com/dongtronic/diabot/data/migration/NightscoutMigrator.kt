@@ -2,6 +2,7 @@ package com.dongtronic.diabot.data.migration
 
 import com.dongtronic.diabot.data.mongodb.NightscoutDAO
 import com.dongtronic.diabot.data.mongodb.NightscoutUserDTO
+import com.dongtronic.diabot.platforms.discord.commands.nightscout.NightscoutDisplayCommands
 import com.dongtronic.diabot.util.logger
 import reactor.core.publisher.Flux
 import reactor.core.publisher.Mono
@@ -40,7 +41,9 @@ class NightscoutMigrator : Migrator {
                     userId = userId,
                     url = url,
                     token = token,
-                    displayOptions = display,
+                    displayOptions = display.mapNotNull { option ->
+                        NightscoutDisplayCommands.DisplayOptions.values().firstOrNull { it.name == option }
+                    }.toSet(),
                     publicGuilds = public
             )
         }

@@ -1,127 +1,121 @@
 package com.dongtronic.diabot.logic.diabetes
 
-import com.dongtronic.diabot.data.A1cDTO
+import com.dongtronic.diabot.data.A1cFromBgDTO
+import com.dongtronic.diabot.data.A1cToBgDTO
 import com.dongtronic.diabot.data.ConversionDTO
 import com.dongtronic.diabot.exceptions.UnknownUnitException
-import com.dongtronic.diabot.util.logger
 
 /**
  * A1c conversion logic
  */
 object A1cConverter {
 
-    private val logger = logger()
+    /**
+     * Convert a blood glucose value to an estimated A1c value.
+     *
+     * @param bgValue The blood glucose value to estimate A1c from.
+     * @param bgUnit Optional: The measurement unit that [bgValue] is in. If this is null then the unit will be guessed.
+     * @return [A1cFromBgDTO] with the estimated A1c value
+     * @throws IllegalArgumentException If the glucose value given was not numeric
+     * @throws IllegalArgumentException If the glucose value is not between `-999` and `999`
+     * @throws UnknownUnitException If the measurement unit is not a valid unit
+     * @see BloodGlucoseConverter.convert
+     */
+    fun a1cFromBg(bgValue: String, bgUnit: String? = null): A1cFromBgDTO {
+        val glucoseConversionResult = BloodGlucoseConverter.convert(bgValue, bgUnit)
 
-    @Throws(UnknownUnitException::class)
-    fun estimateA1c(originalValue: String, unit: String?): A1cDTO {
-        val glucoseConversionResult = BloodGlucoseConverter.convert(originalValue, unit)
-
-        return estimateA1c(glucoseConversionResult!!)
+        return a1cFromBg(glucoseConversionResult)
     }
 
-    fun estimateAverage(originalValue: String): A1cDTO? {
-        val a1c = java.lang.Double.valueOf(originalValue)
-
-        if (a1c < 0 || a1c > 375) {
-            throw IllegalArgumentException()
+    /**
+     * Convert a blood glucose value into an estimated A1c value.
+     *
+     * This function will defer to [estimateA1cAmbiguous] if the [glucose] [ConversionDTO.inputUnit] is [GlucoseUnit.AMBIGUOUS].
+     *
+     * @param glucose The [ConversionDTO] of the blood glucose value
+     * @return [A1cFromBgDTO] containing an A1c estimate for the given glucose value
+     * @see estimateA1cAmbiguous
+     */
+    fun a1cFromBg(glucose: ConversionDTO): A1cFromBgDTO {
+        if (glucose.inputUnit == GlucoseUnit.AMBIGUOUS) {
+            return estimateA1cAmbiguous(glucose)
         }
 
-        var result: A1cDTO? = null
-
-        try {
-            result = if (a1c < 25) {
-                estimateAverageDcct(a1c)
-            } else {
-                estimateAverageIfcc(a1c)
-            }
-        } catch (e: UnknownUnitException) {
-            // Ignored on purpose
-        }
-
-        return result
-    }
-
-    @Throws(UnknownUnitException::class)
-    private fun estimateAverageDcct(dcct: Double): A1cDTO {
-        val mgdl = convertDcctToMgdl(dcct)
-        val ifcc = convertDcctToIfcc(dcct)
-
-        val conversion = BloodGlucoseConverter.convert(mgdl.toString(), "mgdl")
-
-        return A1cDTO(conversion!!, dcct, ifcc, 0.0, 0.0)
-    }
-
-    @Throws(UnknownUnitException::class)
-    private fun estimateAverageIfcc(ifcc: Double): A1cDTO {
-        val mgdl = convertIfccToMgdl(ifcc)
-        val dcct = convertIfccToDcct(ifcc)
-
-        val conversion = BloodGlucoseConverter.convert(mgdl.toString(), "mgdl")
-
-        return A1cDTO(conversion!!, dcct, ifcc, 0.0, 0.0)
-    }
-
-
-    private fun estimateA1c(glucose: ConversionDTO): A1cDTO {
-        var ifccMgdl = 0.0
-        var dcctMgdl = 0.0
-        var ifccMmol = 0.0
-        var dcctMmol = 0.0
-
-        when {
-            glucose.inputUnit == GlucoseUnit.MGDL -> {
-                ifccMgdl = convertMgdlToIfcc(glucose.original)
-                dcctMgdl = convertMgdlToDcct(glucose.original)
-            }
-            glucose.inputUnit == GlucoseUnit.MMOL -> {
-                ifccMmol = convertMgdlToIfcc(glucose.converted)
-                dcctMmol = convertMgdlToDcct(glucose.converted)
-            }
+        val glucoseValue: Number = when (glucose.inputUnit) {
+            GlucoseUnit.MGDL -> glucose.mgdl
+            GlucoseUnit.MMOL -> glucose.mmol
             else -> return estimateA1cAmbiguous(glucose)
         }
 
-        return A1cDTO(glucose, dcctMgdl, ifccMgdl, dcctMmol, ifccMmol)
+        val pair: Pair<Double, Double> = a1cPairFromBg(glucoseValue, glucose.inputUnit)
+
+        return A1cFromBgDTO(glucose, pair.first, pair.second)
     }
 
-    private fun estimateA1cAmbiguous(glucose: ConversionDTO): A1cDTO {
+    /**
+     * Convert an A1c value (in either IFCC or DCCT units) to an estimated average blood glucose.
+     *
+     * @param inputA1c The A1c value to convert from.
+     * @param inputUnit Optional: The measurement unit that [inputA1c] is in. If this is null then the unit will be guessed.
+     * @return [A1cToBgDTO] containing the estimated average blood glucose
+     */
+    fun a1cToBg(inputA1c: Double, inputUnit: A1cUnit? = null): A1cToBgDTO {
+        val a1c = DiabetesConstants.round(inputA1c)
+        val unit = when {
+            inputUnit != null && inputUnit != A1cUnit.AMBIGUOUS -> inputUnit
 
-        val ifccMgdl = convertMgdlToIfcc(glucose.mgdl.toDouble())
-        val dcctMgdl = convertMgdlToDcct(glucose.mgdl.toDouble())
-        val ifccMmol = convertMmolToIfcc(glucose.mmol)
-        val dcctMmol = convertMmolToDcct(glucose.mmol)
+            // guess the unit
+            a1c < 25 -> A1cUnit.DCCT
+            else -> A1cUnit.IFCC
+        }
 
-        return A1cDTO(glucose, dcctMgdl, ifccMgdl, dcctMmol, ifccMmol)
+        val mgdl = unit.convert(a1c, GlucoseUnit.MGDL, false)
+
+        val ifcc: Double
+        val dcct: Double
+        when (unit) {
+            A1cUnit.IFCC -> {
+                ifcc = a1c
+                dcct = unit.convert(a1c).toDouble()
+            }
+            A1cUnit.DCCT -> {
+                ifcc = unit.convert(a1c).toDouble()
+                dcct = a1c
+            }
+            // this should never be called
+            else -> throw IllegalArgumentException("A1c unit cannot be ambiguous")
+        }
+
+        val conversion = BloodGlucoseConverter.convertExplicit(mgdl, GlucoseUnit.MGDL)
+
+        return A1cToBgDTO(conversion, ifcc, dcct)
     }
 
-    private fun convertMmolToDcct(glucose: Double): Double {
-        return convertMgdlToDcct(glucose * 18.016)
+    /**
+     * Convert a blood glucose value in ambiguous units into two sets of possible A1c values, one for each of the units
+     * that the blood glucose value might be.
+     *
+     * @param glucose The [ConversionDTO] of the ambiguous-unit glucose value
+     * @return [A1cFromBgDTO] containing two A1c estimates, one for each glucose unit (mg/dL and mmol/L)
+     */
+    private fun estimateA1cAmbiguous(glucose: ConversionDTO): A1cFromBgDTO {
+        val mgdlPair = a1cPairFromBg(glucose.original, GlucoseUnit.MGDL)
+        val mmolPair = a1cPairFromBg(glucose.original, GlucoseUnit.MMOL)
+
+        return A1cFromBgDTO(glucose, mgdlPair.first, mgdlPair.second, mmolPair.first, mmolPair.second)
     }
 
-    private fun convertMmolToIfcc(glucose: Double): Double {
-        return convertMgdlToIfcc(glucose * 18.016)
-    }
+    /**
+     * Convert a blood glucose value into both IFCC and DCCT estimates.
+     *
+     * @param value The blood glucose value to estimate A1c from
+     * @param unit The measurement unit that [value] is in
+     * @return IFCC and DCCT A1c estimates for the given glucose value
+     */
+    private fun a1cPairFromBg(value: Number, unit: GlucoseUnit): Pair<Double, Double> {
+        val ifcc: Double = unit.convert(value, A1cUnit.IFCC).toDouble()
+        val dcct: Double = unit.convert(value, A1cUnit.DCCT).toDouble()
 
-    private fun convertMgdlToDcct(glucose: Double): Double {
-        return (glucose + 46.7) / 28.7
-    }
-
-    private fun convertMgdlToIfcc(glucose: Double): Double {
-        return (convertMgdlToDcct(glucose) - 2.15) * 10.929
-    }
-
-    private fun convertDcctToMgdl(dcct: Double): Double {
-        return dcct * 28.7 - 46.7
-    }
-
-    private fun convertIfccToMgdl(ifcc: Double): Double {
-        return convertDcctToMgdl(convertIfccToDcct(ifcc))
-    }
-
-    private fun convertIfccToDcct(ifcc: Double): Double {
-        return ifcc / 10.929 + 2.15
-    }
-
-    private fun convertDcctToIfcc(dcct: Double): Double {
-        return (dcct - 2.15) * 10.929
+        return ifcc to dcct
     }
 }

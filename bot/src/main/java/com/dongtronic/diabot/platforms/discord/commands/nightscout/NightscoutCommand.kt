@@ -1,5 +1,15 @@
 package com.dongtronic.diabot.platforms.discord.commands.nightscout
 
+import cloud.commandframework.annotations.Argument
+import cloud.commandframework.annotations.CommandDescription
+import cloud.commandframework.annotations.CommandMethod
+import cloud.commandframework.annotations.specifier.Greedy
+import com.dongtronic.diabot.commands.Category
+import com.dongtronic.diabot.commands.ReplyType
+import com.dongtronic.diabot.commands.annotations.ChildCommands
+import com.dongtronic.diabot.commands.annotations.CommandCategory
+import com.dongtronic.diabot.commands.annotations.DisplayName
+import com.dongtronic.diabot.commands.annotations.Example
 import com.dongtronic.diabot.data.mongodb.ChannelDAO
 import com.dongtronic.diabot.data.mongodb.ChannelDTO
 import com.dongtronic.diabot.data.mongodb.NightscoutDAO
@@ -8,20 +18,19 @@ import com.dongtronic.diabot.exceptions.NightscoutDataException
 import com.dongtronic.diabot.exceptions.NightscoutPrivateException
 import com.dongtronic.diabot.exceptions.NightscoutStatusException
 import com.dongtronic.diabot.exceptions.UnconfiguredNightscoutException
+import com.dongtronic.diabot.logic.diabetes.BGConversionFormatter
 import com.dongtronic.diabot.nameOf
-import com.dongtronic.diabot.platforms.discord.commands.DiscordCommand
-import com.dongtronic.diabot.submitMono
+import com.dongtronic.diabot.platforms.discord.commands.JDACommandUser
+import com.dongtronic.diabot.platforms.discord.commands.nightscout.NightscoutDisplayCommands.DisplayOptions.*
+import com.dongtronic.diabot.platforms.discord.commands.nightscout.NightscoutDisplayCommands.DisplayOptions.Companion.sortOptions
 import com.dongtronic.diabot.util.logger
 import com.dongtronic.nightscout.Nightscout
 import com.dongtronic.nightscout.data.NightscoutDTO
 import com.dongtronic.nightscout.exceptions.NoNightscoutDataException
 import com.fasterxml.jackson.core.JsonProcessingException
-import com.jagrosh.jdautilities.command.CommandEvent
 import net.dv8tion.jda.api.EmbedBuilder
-import net.dv8tion.jda.api.entities.ChannelType
-import net.dv8tion.jda.api.entities.Message
-import net.dv8tion.jda.api.entities.MessageEmbed
-import net.dv8tion.jda.api.entities.User
+import net.dv8tion.jda.api.entities.*
+import net.dv8tion.jda.api.events.message.MessageReceivedEvent
 import net.dv8tion.jda.api.exceptions.InsufficientPermissionException
 import reactor.core.publisher.Flux
 import reactor.core.publisher.Mono
@@ -38,44 +47,41 @@ import java.net.UnknownHostException
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 
-class NightscoutCommand(category: Category) : DiscordCommand(category, null) {
+@ChildCommands(NightscoutSubcommands::class, NightscoutDisplayCommands::class)
+class NightscoutCommand {
 
     private val logger = logger()
 
-    init {
-        this.name = "nightscout"
-        this.help = "Get the most recent info from any Nightscout site"
-        this.arguments = "Partial Nightscout url (part before .herokuapp.com)"
-        this.guildOnly = false
-        this.aliases = arrayOf("ns", "bg", "bs")
-        this.examples = arrayOf("diabot nightscout casscout", "diabot ns", "diabot ns set https://casscout.herokuapp.com", "diabot ns @SomeUser#1234", "diabot ns public false")
-        this.children = arrayOf(
-                NightscoutSetUrlCommand(category, this),
-                NightscoutDeleteCommand(category, this),
-                NightscoutPublicCommand(category, this),
-                NightscoutSetTokenCommand(category, this),
-                NightscoutSetDisplayCommand(category, this)
-        )
-    }
+    @CommandMethod("nightscout|ns|bg|bs [source]")
+    @CommandDescription("Get the most recent info from any Nightscout site")
+    @CommandCategory(Category.BG)
+    @Example(["[nightscout] casscout", "[ns]", "[ns] set https://casscout.herokuapp.com", "[ns] @SomeUser#1234", "[ns] public false"])
+    fun execute(
+            user: JDACommandUser,
+            @Argument("source", description = "The source of BG data")
+            @DisplayName("nightscout URL/herokuapp subdomain/discord user/mention")
+            @Greedy
+            arg: String?
+    ) {
+        val args = arg?.trim() ?: ""
 
-    override fun execute(event: CommandEvent) {
-        val args = event.args.trim()
         // grab the necessary data
         val embed = if (args.isBlank()) {
-            getStoredData(event)
+            // read NS data from the author's NS
+            getStoredData(user)
         } else {
-            getUnstoredData(event)
+            // parse the given arguments
+            getUnstoredData(user, args)
         }.flatMap { data ->
             // send the message
-            event.channel.sendMessage(data.t2)
-                    .submitMono()
+            user.reply(data.t2, ReplyType.NONE)
                     .doOnSuccess { addReactions(data.t1, it) }
         }.subscribeOn(Schedulers.boundedElastic())
 
         embed.subscribe({
             logger.debug("Sent Nightscout embed: $it")
         }, {
-            handleError(it, event)
+            handleError(it, user)
         })
     }
 
@@ -86,143 +92,139 @@ class NightscoutCommand(category: Category) : DiscordCommand(category, null) {
      * - when replying
      *
      * @param ex The error which was thrown
-     * @param event The command event which called this command
+     * @param user The command sender which called this command
      */
-    private fun handleError(ex: Throwable, event: CommandEvent) {
-        when (ex) {
+    private fun handleError(ex: Throwable, user: JDACommandUser) {
+        val response = when (ex) {
             is NightscoutDataException -> {
                 if (ex.message != null) {
-                    event.replyError(ex.message)
+                    ex.message!!
                 } else {
-                    event.replyError("Nightscout data could not be read")
+                    "Nightscout data could not be read"
                 }
             }
-            is UnconfiguredNightscoutException -> event.reply("Please set your Nightscout hostname using `diabot nightscout set <hostname>`")
-            is IllegalArgumentException -> event.reply("Error: " + ex.message)
+            is UnconfiguredNightscoutException -> "Please set your Nightscout hostname using `diabot nightscout set <hostname>`"
+            is IllegalArgumentException -> "Error: " + ex.message
             is InsufficientPermissionException -> {
                 logger.info("Couldn't reply with nightscout data due to missing permission: ${ex.permission}")
-                event.replyError("Couldn't perform requested action due to missing permission: `${ex.permission}`")
+                "Couldn't perform requested action due to missing permission: `${ex.permission}`"
             }
             is UnknownHostException -> {
-                event.reactError()
                 logger.info("No host found: ${ex.message}")
+                "No NS host could be found"
             }
             else -> {
-                event.reactError()
                 logger.warn("Unexpected error: " + ex.message, ex)
+                "Unexpected error occurred"
             }
         }
+
+        user.replyErrorS(response, ReplyType.NONE)
     }
 
     /**
      * Handles errors which occur while grabbing Nightscout data.
      *
      * @param ex The [Throwable] which was given
-     * @param event Command event which caused the bot to grab this Nightscout data
+     * @param user The user which requested the bot to grab this Nightscout data
      * @param userDTO The user data which was used for fetching
      */
-    private fun handleGrabError(ex: Throwable, event: CommandEvent, userDTO: NightscoutUserDTO) {
-        when (ex) {
+    private fun handleGrabError(ex: Throwable, user: JDACommandUser, userDTO: NightscoutUserDTO) {
+        val event = user.event
+        val response = when (ex) {
             is NoNightscoutDataException -> {
-                event.reactError()
                 logger.info("No nightscout data from ${userDTO.url}")
+                "No data could be retrieved from Nightscout"
             }
             is JsonProcessingException -> {
-                event.reactError()
                 logger.warn("Malformed JSON from ${userDTO.url}")
+                "Malformed JSON"
             }
             is NightscoutStatusException -> {
                 if (ex.status == 401) {
                     if (userDTO.jdaUser != null) {
                         if (userDTO.jdaUser == event.author) {
-                            event.replyError("Could not authenticate to Nightscout. Please set an authentication token with `diabot nightscout token <token>`")
+                            "Could not authenticate to Nightscout. Please set an authentication token with `diabot nightscout token <token>`"
                         } else {
-                            event.replyError("Nightscout data for ${event.nameOf(userDTO.jdaUser)} is unreadable due to missing token.")
+                            val name = event.nameOf(userDTO.jdaUser)
+                            "Nightscout data for $name is unreadable due to missing token."
                         }
                     } else {
-                        event.replyError("Nightscout data is unreadable due to missing token.")
+                        "Nightscout data is unreadable due to missing token."
                     }
                 } else {
-                    event.replyError("Could not connect to Nightscout instance.")
                     logger.warn("Connection status ${ex.status} from ${userDTO.url}")
+                    "Could not connect to Nightscout instance."
                 }
             }
+            else -> return
         }
+
+        user.replyErrorS(response, ReplyType.NONE)
     }
 
     /**
      * Grabs data for the command sender and builds a Nightscout response.
      *
-     * @param event Command event which called this command
+     * @param sender The user which called this command
      * @return A nightscout DTO and an embed based on it
      */
-    private fun getStoredData(event: CommandEvent): Mono<Tuple2<NightscoutDTO, MessageEmbed>> {
-        return getUserDto(event.author)
-                .flatMap { buildNightscoutResponse(it, event) }
+    private fun getStoredData(sender: JDACommandUser): Mono<Tuple2<NightscoutDTO, MessageEmbed>> {
+        return getUserDto(sender.event.author)
+                .flatMap { buildNightscoutResponse(it, sender) }
     }
 
     /**
      * Grabs data for another user/URL (depending on the arguments) and builds a Nightscout response.
      *
-     * @param event Command event which called this command
+     * @param sender The user which called this command
      * @return A nightscout DTO and an embed based on it
      */
-    private fun getUnstoredData(event: CommandEvent): Mono<Tuple2<NightscoutDTO, MessageEmbed>> {
-        val args = event.args.split("\\s+".toRegex()).dropLastWhile { it.isEmpty() }.toTypedArray()
+    private fun getUnstoredData(sender: JDACommandUser, args: String): Mono<Tuple2<NightscoutDTO, MessageEmbed>> {
+        val event = sender.event
+        val guild = if (event.isFromGuild) event.guild else null
+        val args1 = args.split(' ')
 
-        val namedMembers = event.event.guild.members.filter {
-            it.effectiveName.equals(event.args, true)
-                    || it.user.name.equals(event.args, true)
-        }
-        val mentionedMembers = event.event.message.mentionedMembers
+        val namedMembers =
+                guild?.members?.filter {
+                    it.effectiveName.equals(args, true)
+                            || it.user.name.equals(args, true)
+                } ?: emptyList()
+        val mentionedMembers = guild?.let { event.message.getMentionedMembers(it) } ?: emptyList()
 
         val endpoint: Mono<NightscoutUserDTO> = when {
             mentionedMembers.size > 1 ->
                 IllegalArgumentException("Too many mentioned users.").toMono()
-            event.event.message.mentionsEveryone() ->
+
+            event.message.mentionsEveryone() ->
                 IllegalArgumentException("Cannot handle mentioning everyone.").toMono()
 
             mentionedMembers.size == 1 -> {
-                val user = mentionedMembers[0].user
-                val exception = IllegalArgumentException("User does not have a configured Nightscout URL.")
-
-                getUserDto(user, exception)
-                        .handle { t, u: SynchronousSink<NightscoutUserDTO> ->
-                            if (!t.isNightscoutPublic(event.guild.id)) {
-                                u.error(NightscoutPrivateException(event.nameOf(user)))
-                            } else {
-                                u.next(t)
-                            }
-                        }
+                val member = mentionedMembers.first()
+                getUserDtoPublic(member)
             }
-            args.isNotEmpty() && args[0].matches("^https?://.*".toRegex()) -> {
+
+            args1.isNotEmpty() && args1[0].matches("^https?://.*".toRegex()) -> {
                 // is a URL
-                val url = NightscoutSetUrlCommand.validateNightscoutUrl(args[0])
+                val url = NightscoutSubcommands.validateNightscoutUrl(args1[0])
                 getDataFromDomain(url, event)
             }
+
             else -> {
                 // Try to get nightscout data from username/nickname, otherwise just try to get from hostname
-                val user = namedMembers.getOrNull(0)?.user
-                val domain = "https://${args[0]}.herokuapp.com"
+                val member = namedMembers.firstOrNull()
+                val domain = "https://${args1[0]}.herokuapp.com"
                 val fallbackDto = NightscoutUserDTO(url = domain).toMono()
 
-                if (user == null) {
+                if (member == null) {
                     fallbackDto
                 } else {
-                    getUserDto(user)
-                            .switchIfEmpty { fallbackDto }
-                            .handle { userDTO, sink: SynchronousSink<NightscoutUserDTO> ->
-                                if (!userDTO.isNightscoutPublic(event.guild.id)) {
-                                    sink.error(NightscoutPrivateException(event.nameOf(user)))
-                                } else {
-                                    sink.next(userDTO)
-                                }
-                            }
+                    getUserDtoPublic(member).onErrorResume(IllegalArgumentException::class) { fallbackDto }
                 }
             }
         }
 
-        return endpoint.flatMap { buildNightscoutResponse(it, event) }
+        return endpoint.flatMap { buildNightscoutResponse(it, sender) }
     }
 
     /**
@@ -232,7 +234,7 @@ class NightscoutCommand(category: Category) : DiscordCommand(category, null) {
      * @param event Command event which called this command
      * @return NS user DTO for this domain. This will be a generic DTO if there was no data found.
      */
-    private fun getDataFromDomain(domain: String, event: CommandEvent): Mono<NightscoutUserDTO> {
+    private fun getDataFromDomain(domain: String, event: MessageReceivedEvent): Mono<NightscoutUserDTO> {
         val userDtos = getUsersForDomain(domain)
         // temporary userDTO for if this domain does not belong to anyone in the guild
         val fallback = NightscoutUserDTO(url = domain).toMono()
@@ -240,7 +242,6 @@ class NightscoutCommand(category: Category) : DiscordCommand(category, null) {
         return userDtos
                 .flatMap { userDTO ->
                     val member = event.guild.getMemberById(userDTO.userId)
-                    val user: User
                     val publicInThisGuild = userDTO.isNightscoutPublic(event.guild.id)
 
                     if (member == null) {
@@ -249,7 +250,7 @@ class NightscoutCommand(category: Category) : DiscordCommand(category, null) {
                         return@flatMap fallback
                     }
 
-                    user = member.user
+                    val user = member.user
 
                     if (!publicInThisGuild) {
                         return@flatMap NightscoutPrivateException(event.nameOf(user))
@@ -266,11 +267,13 @@ class NightscoutCommand(category: Category) : DiscordCommand(category, null) {
      * Loads all the necessary data from a Nightscout instance and creates an embed of it.
      *
      * @param userDTO Data necessary for loading/rendering
-     * @param event Command event which called this command
+     * @param sender The user which called this command
      * @return A nightscout DTO and an embed based on it
      */
-    private fun buildNightscoutResponse(userDTO: NightscoutUserDTO, event: CommandEvent): Mono<Tuple2<NightscoutDTO, MessageEmbed>> {
+    private fun buildNightscoutResponse(userDTO: NightscoutUserDTO, sender: JDACommandUser): Mono<Tuple2<NightscoutDTO, MessageEmbed>> {
+        val event = sender.event
         val api = Nightscout(userDTO.apiEndpoint, userDTO.token)
+
         return Mono.from(
                 api.getSettings()
                         .flatMap { api.getRecentSgv(it) }
@@ -279,20 +282,24 @@ class NightscoutCommand(category: Category) : DiscordCommand(category, null) {
             api.close()
         }.onErrorMap(HttpException::class) {
             NightscoutStatusException(it.code())
-        }.onErrorResume({ error ->
-            error is NightscoutStatusException
-                    || error is JsonProcessingException
-                    || error is NoNightscoutDataException
-        }, {
-            // fallback to `handleGrabError` if the error is any of the above
-            handleGrabError(it, event, userDTO)
-            Mono.empty<NightscoutDTO>()
-        }).zipWhen { nsDto ->
+        }.onErrorResume(
+                { error ->
+                    error is NightscoutStatusException
+                            || error is JsonProcessingException
+                            || error is NoNightscoutDataException
+                },
+                {
+                    // fallback to `handleGrabError` if the error is any of the above
+                    handleGrabError(it, sender, userDTO)
+                    Mono.empty<NightscoutDTO>()
+                }
+        ).zipWhen { nsDto ->
             // attach a message embed to the NightscoutDTO
             val channelType = event.channelType
             var isShort = false.toMono()
+
             if (channelType == ChannelType.TEXT) {
-                isShort = if (userDTO.displayOptions.contains("simple")) {
+                isShort = if (userDTO.displayOptions.contains(SIMPLE)) {
                     true.toMono()
                 } else {
                     ChannelDAO.instance.hasAttribute(event.channel.id, ChannelDTO.ChannelAttribute.NIGHTSCOUT_SHORT)
@@ -318,33 +325,43 @@ class NightscoutCommand(category: Category) : DiscordCommand(category, null) {
             short: Boolean,
             builder: EmbedBuilder = EmbedBuilder()
     ): EmbedBuilder {
+        val newest = nsDTO.getNewestEntry()
+        val trendString = newest.trend.unicode
         val displayOptions = userDTO.displayOptions
 
-        if (displayOptions.contains("title")) builder.setTitle(nsDTO.title)
-
         val (mmolString: String, mgdlString: String) = buildGlucoseStrings(nsDTO)
-
-        val trendString = nsDTO.trend.unicode
         builder.addField("mmol/L", mmolString, true)
         builder.addField("mg/dL", mgdlString, true)
-        if (displayOptions.contains("trend")) builder.addField("trend", trendString, true)
-        if (nsDTO.iob != 0.0F && displayOptions.contains("iob")) {
-            builder.addField("iob", nsDTO.iob.toString(), true)
-        }
-        if (nsDTO.cob != 0 && displayOptions.contains("cob")) {
-            builder.addField("cob", nsDTO.cob.toString(), true)
+
+        displayOptions.sortOptions().forEach {
+            @Suppress("NON_EXHAUSTIVE_WHEN")
+            when (it) {
+                TITLE -> builder.setTitle(nsDTO.title)
+                TREND -> builder.addField("trend", trendString, true)
+                COB -> {
+                    if (nsDTO.iob != 0.0F) {
+                        builder.addField("iob", nsDTO.iob.toString(), true)
+                    }
+                }
+                IOB -> {
+                    if (nsDTO.cob != 0) {
+                        builder.addField("cob", nsDTO.cob.toString(), true)
+                    }
+                }
+                AVATAR -> {
+                    if (!short && userDTO.jdaUser?.avatarUrl != null) {
+                        builder.setThumbnail(userDTO.jdaUser.avatarUrl)
+                    }
+                }
+            }
         }
 
         setResponseColor(nsDTO, builder)
 
-        if (userDTO.jdaUser?.avatarUrl != null && displayOptions.contains("avatar") && !short) {
-            builder.setThumbnail(userDTO.jdaUser.avatarUrl)
-        }
-
-        builder.setTimestamp(nsDTO.dateTime)
+        builder.setTimestamp(newest.dateTime)
         builder.setFooter("measured", "https://github.com/nightscout/cgm-remote-monitor/raw/master/static/images/large.png")
 
-        if (nsDTO.dateTime!!.plus(15, ChronoUnit.MINUTES).isBefore(Instant.now())) {
+        if (newest.dateTime.plus(15, ChronoUnit.MINUTES).isBefore(Instant.now())) {
             builder.setDescription("**BG data is more than 15 minutes old**")
         }
 
@@ -358,14 +375,15 @@ class NightscoutCommand(category: Category) : DiscordCommand(category, null) {
      * @return A pair consisting of mmol/L in the first value and mg/dL in the second value
      */
     private fun buildGlucoseStrings(dto: NightscoutDTO): Pair<String, String> {
+        val newest = dto.getNewestEntry()
         val mmolString: String
         val mgdlString: String
-        if (dto.delta != null) {
-            mmolString = buildGlucoseString(dto.glucose!!.mmol.toString(), dto.delta!!.mmol.toString(), dto.deltaIsNegative)
-            mgdlString = buildGlucoseString(dto.glucose!!.mgdl.toString(), dto.delta!!.mgdl.toString(), dto.deltaIsNegative)
+        if (newest.delta != null) {
+            mmolString = buildGlucoseString(newest.glucose.mmol.toString(), newest.delta!!.mmol.toString())
+            mgdlString = buildGlucoseString(newest.glucose.mgdl.toString(), newest.delta!!.mgdl.toString())
         } else {
-            mmolString = buildGlucoseString(dto.glucose!!.mmol.toString(), "999.0", false)
-            mgdlString = buildGlucoseString(dto.glucose!!.mgdl.toString(), "999.0", false)
+            mmolString = buildGlucoseString(newest.glucose.mmol.toString(), "999.0")
+            mgdlString = buildGlucoseString(newest.glucose.mgdl.toString(), "999.0")
         }
         return Pair(mmolString, mgdlString)
     }
@@ -375,10 +393,9 @@ class NightscoutCommand(category: Category) : DiscordCommand(category, null) {
      *
      * @param glucose The glucose value.
      * @param delta The current delta.
-     * @param negative Whether the delta is falling.
      * @return Formatted glucose and delta
      */
-    private fun buildGlucoseString(glucose: String, delta: String, negative: Boolean): String {
+    private fun buildGlucoseString(glucose: String, delta: String): String {
         val builder = StringBuilder()
 
         builder.append(glucose)
@@ -387,9 +404,7 @@ class NightscoutCommand(category: Category) : DiscordCommand(category, null) {
             // 999L is placeholder for absent delta
             builder.append(" (")
 
-            if (negative) {
-                builder.append("-")
-            } else {
+            if (!delta.startsWith("-")) {
                 builder.append("+")
             }
 
@@ -407,15 +422,10 @@ class NightscoutCommand(category: Category) : DiscordCommand(category, null) {
      * @param response The message to react to.
      */
     private fun addReactions(dto: NightscoutDTO, response: Message) {
-        // #20: Reply with :smirk: when value is 69 mg/dL or 6.9 mmol/L
-        if (dto.glucose!!.mgdl == 69 || dto.glucose!!.mmol == 6.9) {
-            response.addReaction("\uD83D\uDE0F").queue()
-        }
-        // #36 and #60: Reply with :100: when value is 100 mg/dL, 5.5 mmol/L, or 10.0 mmol/L
-        if (dto.glucose!!.mgdl == 100
-                || dto.glucose!!.mmol == 5.5
-                || dto.glucose!!.mmol == 10.0) {
-            response.addReaction("\uD83D\uDCAF").queue()
+        val newest = dto.getNewestEntry()
+
+        BGConversionFormatter.getReactions(newest.glucose).forEach {
+            response.addReaction(it).queue()
         }
     }
 
@@ -426,7 +436,7 @@ class NightscoutCommand(category: Category) : DiscordCommand(category, null) {
      * @param builder Optional: the embed to set colors on.
      */
     private fun setResponseColor(dto: NightscoutDTO, builder: EmbedBuilder = EmbedBuilder()): EmbedBuilder {
-        val glucose = dto.glucose!!.mgdl.toDouble()
+        val glucose = dto.getNewestEntry().glucose.mgdl.toDouble()
 
         if (glucose >= dto.high || glucose <= dto.low) {
             builder.setColor(Color.red)
@@ -467,6 +477,28 @@ class NightscoutCommand(category: Category) : DiscordCommand(category, null) {
                     } else {
                         // throw an exception if the url is blank
                         throwable.toMono()
+                    }
+                }
+    }
+
+    /**
+     * Gets a [NightscoutUserDTO] for the given member on another user's behalf. This function checks the member's
+     * privacy settings and will throw a [NightscoutPrivateException] if it is private in the guild.
+     *
+     * @param member Member to retrieve Nightscout data from
+     * @param throwable Exception to throw if the member does not have a Nightscout URL configured
+     * @return A [NightscoutUserDTO] instance belonging to the given member
+     */
+    private fun getUserDtoPublic(
+            member: Member,
+            throwable: Throwable = IllegalArgumentException("User does not have a configured Nightscout URL.")
+    ): Mono<NightscoutUserDTO> {
+        return getUserDto(member.user, throwable)
+                .handle { t, u: SynchronousSink<NightscoutUserDTO> ->
+                    if (!t.isNightscoutPublic(member.guild.id)) {
+                        u.error(NightscoutPrivateException(member.effectiveName))
+                    } else {
+                        u.next(t)
                     }
                 }
     }

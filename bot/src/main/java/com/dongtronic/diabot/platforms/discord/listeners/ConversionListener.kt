@@ -1,21 +1,31 @@
 package com.dongtronic.diabot.platforms.discord.listeners
 
-import com.dongtronic.diabot.data.ConversionDTO
 import com.dongtronic.diabot.exceptions.UnknownUnitException
-import com.dongtronic.diabot.logic.diabetes.BloodGlucoseConverter
-import com.dongtronic.diabot.logic.diabetes.GlucoseUnit
+import com.dongtronic.diabot.logic.diabetes.BGConversionFormatter
+import com.dongtronic.diabot.platforms.discord.commands.JDACommandUser
 import com.dongtronic.diabot.util.Patterns
 import com.dongtronic.diabot.util.logger
-import net.dv8tion.jda.api.events.message.guild.GuildMessageReceivedEvent
+import com.github.ygimenez.method.Pages
+import com.github.ygimenez.model.ThrowingBiConsumer
+import com.github.ygimenez.type.Emote
+import net.dv8tion.jda.api.entities.Member
+import net.dv8tion.jda.api.entities.Message
+import net.dv8tion.jda.api.events.message.MessageReceivedEvent
 import net.dv8tion.jda.api.hooks.ListenerAdapter
+import java.util.concurrent.TimeUnit
+import java.util.function.Consumer
+import java.util.function.Predicate
 
-class ConversionListener : ListenerAdapter() {
+class ConversionListener(
+        private val jdaCommandUpdateHandler: JDACommandUpdateHandler? = null
+) : ListenerAdapter() {
     private val logger = logger()
+    private val cancelButton = ThrowingBiConsumer { _: Member, message: Message ->
+        message.delete().reason("unit conversion removed by author's request").queue()
+    }
 
-    override fun onGuildMessageReceived(event: GuildMessageReceivedEvent) {
+    override fun onMessageReceived(event: MessageReceivedEvent) {
         if (event.author.isBot) return
-
-        val channel = event.channel
 
         val message = event.message
         val messageText = message.contentRaw
@@ -43,46 +53,39 @@ class ConversionListener : ListenerAdapter() {
         }
 
         try {
-            val result: ConversionDTO? = if (unitString.length > 1) {
-                BloodGlucoseConverter.convert(numberString, unitString)
+            val result = if (unitString.length > 1) {
+                BGConversionFormatter.getResponse(numberString, unitString)
             } else {
-                BloodGlucoseConverter.convert(numberString, null)
+                BGConversionFormatter.getResponse(numberString, null)
             }
 
-            when {
-                result!!.inputUnit === GlucoseUnit.MMOL -> channel.sendMessage(String.format("%s mmol/L is %s mg/dL", result!!.mmol, result.mgdl)).queue()
-                result!!.inputUnit === GlucoseUnit.MGDL -> channel.sendMessage(String.format("%s mg/dL is %s mmol/L", result!!.mgdl, result.mmol)).queue()
-                else -> {
-                    val reply = arrayOf(
-                            "*I'm not sure if you gave me mmol/L or mg/dL, so I'll give you both.*",
-                            "%s mg/dL is **%s mmol/L**",
-                            "%s mmol/L is **%s mg/dL**").joinToString(
-                            "%n")
+            val sender = JDACommandUser.of(event, jdaCommandUpdateHandler)
 
-                    channel.sendMessage(String.format(reply, numberString, result!!.mmol, numberString,
-                            result.mgdl)).queue()
-                }
-            }
+            sender.reply(result.first)
+                    .doOnSuccess { newMessage ->
+                        addReactions(newMessage, result.second)
 
-            // #20: Reply with :smirk: when value is 69 mg/dL or 6.9 mmol/L
-            if (result.mmol == 6.9 || result.mgdl == 69) {
-                event.message.addReaction("\uD83D\uDE0F").queue()
-            }
-
-            // #36 and #60: Reply with :100: when value is 100 mg/dL, 5.5 mmol/L, or 10.0 mmol/L
-            if (result.mmol == 5.5
-                    || result.mmol == 10.0
-                    || result.mgdl == 100) {
-                event.message.addReaction("\uD83D\uDCAF").queue()
-            }
-
+                        Pages.buttonize(
+                                newMessage,
+                                mapOf(Pages.getPaginator().emotes[Emote.CANCEL] to cancelButton),
+                                true,
+                                30,
+                                TimeUnit.SECONDS,
+                                Predicate.isEqual(message.author),
+                                Consumer { addReactions(it, result.second) }
+                        )
+                    }
+                    .subscribe()
         } catch (ex: IllegalArgumentException) {
             // Ignored on purpose
-            logger.warn("IllegalArgumentException occurred but was ignored in BG conversion")
         } catch (ex: UnknownUnitException) {
             // Ignored on purpose
         }
-
     }
 
+    private fun addReactions(message: Message, reactions: List<String>) {
+        reactions.forEach {
+            message.addReaction(it).queue()
+        }
+    }
 }

@@ -1,5 +1,9 @@
 package com.dongtronic.diabot.data.mongodb
 
+import com.dongtronic.diabot.graph.GraphSettings
+import com.dongtronic.diabot.platforms.discord.commands.nightscout.NightscoutDisplayCommands
+import com.dongtronic.diabot.platforms.discord.commands.nightscout.NightscoutDisplayCommands.DisplayOptions.Companion.optionsForDisplay
+import com.dongtronic.diabot.platforms.discord.commands.nightscout.NightscoutDisplayCommands.DisplayOptions.Companion.sortOptions
 import com.dongtronic.diabot.util.*
 import com.mongodb.client.model.IndexOptions
 import com.mongodb.client.model.ReturnDocument
@@ -86,6 +90,17 @@ class NightscoutDAO private constructor() {
     }
 
     /**
+     * Updates or inserts a user's document in the database.
+     *
+     * @param dto The [NightscoutUserDTO] instance to update with
+     * @return [UpdateResult]
+     */
+    fun replaceUser(dto: NightscoutUserDTO): Mono<UpdateResult> {
+        return collection.replaceOne(filter(dto.userId), dto, replaceUpsert()).toMono()
+                .subscribeOn(scheduler)
+    }
+
+    /**
      * Sets a user's NS URL.
      *
      * @param userId The user's ID
@@ -93,8 +108,12 @@ class NightscoutDAO private constructor() {
      * @return The result of setting their URL
      */
     fun setUrl(userId: String, url: String): Mono<UpdateResult> {
-        return collection.updateOne(NightscoutUserDTO::userId eq userId,
-                setValue(NightscoutUserDTO::url, url), upsert())
+        val updates = combine(
+                setValue(NightscoutUserDTO::url, url),
+                unset(NightscoutUserDTO::token)
+        )
+
+        return collection.updateOne(NightscoutUserDTO::userId eq userId, updates, upsert())
                 .toMono()
                 .subscribeOn(scheduler)
     }
@@ -161,33 +180,90 @@ class NightscoutDAO private constructor() {
      * @param displaySettings The display settings to update with.
      * @return The user's new display settings.
      */
+    @Deprecated("Use updateDisplay(String, UpdateMode, Set) instead", ReplaceWith("updateDisplay(String, UpdateMode, Set)"))
     fun updateDisplay(userId: String, append: Boolean? = null, vararg displaySettings: String): Mono<List<String>> {
-        val upsertAfter = findOneAndUpdateUpsert().returnDocument(ReturnDocument.AFTER)
-        var settingsList = displaySettings.toList()
+        val updateMode = when (append) {
+            true -> UpdateMode.ADD
+            false -> UpdateMode.DELETE
+            null -> UpdateMode.SET
+        }
+        val settings = displaySettings.map {
+            NightscoutDisplayCommands.DisplayOptions.valueOf(it.toUpperCase())
+        }.toSet()
 
-        if (displaySettings.isEmpty()) {
-            // delete the key instead of making it blank
+        return updateDisplay(userId, updateMode, settings).map { it.optionsForDisplay() }
+    }
+
+    /**
+     * Changes a user's NS display settings.
+     *
+     * @param userId The user ID to change display settings for.
+     * @param updateMode The modification type for the display settings.
+     * @param displaySettings The display settings to update with. Using `null` will reset the settings to default.
+     * @return The user's new display settings.
+     */
+    fun updateDisplay(
+            userId: String,
+            updateMode: UpdateMode,
+            displaySettings: Set<NightscoutDisplayCommands.DisplayOptions>? = null
+    ): Mono<Set<NightscoutDisplayCommands.DisplayOptions>> {
+        if (displaySettings == null) {
             return deleteUser(userId, NightscoutUserDTO::displayOptions)
-                    .flatMap { Mono.just(listOf("reset")) }
+                    .map { emptySet<NightscoutDisplayCommands.DisplayOptions>() }
         }
 
-        if (settingsList.any { it == "none" }) {
-            settingsList = listOf()
+        val settings = displaySettings.sortOptions()
+
+        if (updateMode == UpdateMode.SET) {
+            val upsertAfter = findOneAndUpdateUpsert().returnDocument(ReturnDocument.AFTER)
+            val update = setValue(NightscoutUserDTO::displayOptions, settings)
+
+            return collection.findOneAndUpdate(filter(userId), update, upsertAfter).toMono()
+                    .map { it.displayOptions }
+                    .subscribeOn(scheduler)
         }
 
-        @Suppress("CascadeIf")
-        val update = if (append == true) {
-            addEachToSet(NightscoutUserDTO::displayOptions, settingsList)
-        } else if (append == false) {
-            pullAll(NightscoutUserDTO::displayOptions, settingsList)
-        } else {
-            setValue(NightscoutUserDTO::displayOptions, settingsList)
-        }
+        val user = getUser(userId).map {
+            val currentOptions = it.displayOptions.toMutableSet()
 
-        return collection.findOneAndUpdate(filter(userId), update, upsertAfter).toMono()
-                .map { it.displayOptions.ifEmpty { listOf("none") } }
+            @Suppress("NON_EXHAUSTIVE_WHEN")
+            when (updateMode) {
+                UpdateMode.ADD -> currentOptions.addAll(settings)
+                UpdateMode.DELETE -> currentOptions.removeAll(settings)
+            }
+
+            it.copy(displayOptions = currentOptions)
+        }.zipWhen { replaceUser(it) }
+
+        return user
+                .map { it.t1.displayOptions }
                 .subscribeOn(scheduler)
     }
+
+    /**
+     * Changes a user's NS graph settings.
+     *
+     * @param userId The user ID to change graph settings for.
+     * @param graphSettings The graph settings to set for the user. If this is null, then the graph settings will be deleted.
+     * @return The user's new graph settings.
+     */
+    fun updateGraphSettings(userId: String, graphSettings: GraphSettings? = null): Mono<GraphSettings> {
+        val upsertAfter = findOneAndUpdateUpsert().returnDocument(ReturnDocument.AFTER)
+
+        if (graphSettings == null) {
+            // delete the key
+            return deleteUser(userId, NightscoutUserDTO::graphSettings)
+                    .map { GraphSettings() }
+        }
+
+        val update = setValue(NightscoutUserDTO::graphSettings, graphSettings)
+
+        return collection.findOneAndUpdate(filter(userId), update, upsertAfter).toMono()
+                .map { it.graphSettings }
+                .subscribeOn(scheduler)
+    }
+
+    enum class UpdateMode { SET, ADD, DELETE }
 
     companion object {
         val instance: NightscoutDAO by lazy { NightscoutDAO() }

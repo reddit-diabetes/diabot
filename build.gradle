@@ -10,6 +10,8 @@ allprojects {
     repositories {
         jcenter()
         mavenCentral()
+        maven { url 'https://repo.incendo.org/content/repositories/snapshots/' }
+        maven { url 'https://jitpack.io' }
     }
 
     dependencies {
@@ -20,8 +22,14 @@ allprojects {
         api group: 'org.slf4j', name: 'slf4j-api', version: '1.7.25'
     }
 
+    sourceSets {
+        // force usage of `java` folder for kotlin sources
+        main.kotlin.srcDirs += 'src/main/java'
+        test.kotlin.srcDirs += 'src/test/java'
+    }
+
     group = 'com.dongtronic.diabot'
-    version = '1.14.0'
+    version = '2.0.0'
 
     sourceCompatibility = 11
     targetCompatibility = 11
@@ -32,8 +40,13 @@ allprojects {
         //noinspection GrUnresolvedAccess
         kotlinOptions {
             jvmTarget = "11"
+            freeCompilerArgs += '-java-parameters'
         }
     }
+}
+
+dependencies {
+    implementation project(path: ':bot')
 }
 
 task stage(dependsOn: ['clean', 'shadowJar'])
@@ -52,8 +65,4 @@ shadowJar {
                 'Add-Opens': 'java.base/java.lang.invoke'
         )
     }
-}
-
-dependencies {
-    implementation project(path: ':bot')
 }

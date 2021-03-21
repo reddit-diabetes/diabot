@@ -1,24 +1,24 @@
 package com.dongtronic.diabot.platforms.discord.commands.misc
 
-import com.dongtronic.diabot.platforms.discord.commands.DiscordCommand
-import com.jagrosh.jdautilities.command.Command
-import com.jagrosh.jdautilities.command.CommandEvent
+import cloud.commandframework.annotations.CommandDescription
+import cloud.commandframework.annotations.CommandMethod
+import cloud.commandframework.annotations.Hidden
+import com.dongtronic.diabot.commands.Category
+import com.dongtronic.diabot.commands.annotations.CommandCategory
+import com.dongtronic.diabot.commands.annotations.GuildOnly
+import com.dongtronic.diabot.platforms.discord.commands.JDACommandUser
 import java.time.temporal.ChronoUnit
 
-class PingCommand(category: Command.Category) : DiscordCommand(category, null) {
-
-    init {
-        this.name = "ping"
-        this.help = "checks the bot's latency"
-        this.guildOnly = true
-        this.aliases = arrayOf("pong")
-        this.hidden = true
-    }
-
-    override fun execute(event: CommandEvent) {
-        event.reply("Ping: ...") { m ->
-            val ping = event.message.timeCreated.until(m.timeCreated, ChronoUnit.MILLIS)
-            m.editMessage("Ping: " + ping + "ms | Websocket: " + event.jda.gatewayPing + "ms").queue()
+class PingCommand {
+    @Hidden
+    @GuildOnly
+    @CommandMethod("ping|pong")
+    @CommandDescription("Checks the bot's latency")
+    @CommandCategory(Category.UTILITIES)
+    fun execute(sender: JDACommandUser) {
+        sender.reply("Ping: ...").subscribe { m ->
+            val ping = sender.event.message.timeCreated.until(m.timeCreated, ChronoUnit.MILLIS)
+            m.editMessage("Ping: " + ping + "ms | Websocket: " + sender.event.jda.gatewayPing + "ms").queue()
         }
     }
 }

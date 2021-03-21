@@ -1,15 +1,20 @@
 package com.dongtronic.diabot.platforms.discord.commands.quote
 
+import cloud.commandframework.annotations.*
+import cloud.commandframework.annotations.specifier.Greedy
+import com.dongtronic.diabot.commands.Category
+import com.dongtronic.diabot.commands.ReplyType
+import com.dongtronic.diabot.commands.annotations.*
 import com.dongtronic.diabot.data.mongodb.QuoteDAO
 import com.dongtronic.diabot.data.mongodb.QuoteDTO
 import com.dongtronic.diabot.exceptions.RequestStatusException
-import com.dongtronic.diabot.platforms.discord.commands.DiscordCommand
+import com.dongtronic.diabot.platforms.discord.commands.JDACommandUser
 import com.dongtronic.diabot.util.logger
 import com.fasterxml.jackson.annotation.JsonAutoDetect
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
-import com.jagrosh.jdautilities.command.CommandEvent
 import net.dv8tion.jda.api.JDA
+import net.dv8tion.jda.api.Permission
 import net.dv8tion.jda.api.entities.Guild
 import net.dv8tion.jda.api.entities.Message
 import net.dv8tion.jda.api.entities.User
@@ -33,32 +38,36 @@ import java.time.Duration
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicLong
 
-class QuoteImportCommand(category: Category, parent: QuoteCommand) : DiscordCommand(category, parent), EventListener {
+class QuoteImportCommand : EventListener {
     private val mapper = jacksonObjectMapper()
     private val logger = logger()
     private val pendingRequests = mutableSetOf<User>()
     private var guildMessages = DirectProcessor.create<GuildMessageReceivedEvent>()
     private var eventListening = false
 
-    init {
-        this.name = "import"
-        this.help = "Imports UB3R-B0T quotes from a JSON file, either provided via a URL or a file attachment"
-        this.guildOnly = true
-        this.ownerCommand = true
-        this.hidden = true
-        this.aliases = arrayOf()
-        this.examples = arrayOf(this.parent!!.name + " import <URL>", this.parent.name + " import")
-    }
-
-    override fun execute(event: CommandEvent) {
+    @Hidden
+    @OwnersOnly
+    @GuildOnly
+    @DiscordPermission(Permission.MESSAGE_MANAGE)
+    @CommandMethod("quote import [url]")
+    @CommandDescription("Imports UB3R-B0T quotes from a JSON file, either provided via a URL or a file attachment")
+    @CommandCategory(Category.FUN)
+    @Example(["[import] https://pastebin.com/raw/...", "[import] (with a JSON file attached)"])
+    fun execute(
+            sender: JDACommandUser,
+            @Greedy
+            @Argument("url", description = "A URL which provides the UB3R-B0T quotes in JSON form")
+            url: String?
+    ) {
+        val event = sender.event
         registerListener(event.jda)
 
         if (!QuoteDAO.checkRestrictions(event.textChannel, warnDisabledGuild = true)) return
         if (pendingRequests.contains(event.author)) return
         pendingRequests.add(event.author)
 
-        if (event.args.isNotBlank() || event.message.attachments.isNotEmpty()) {
-            parse(event)
+        if (url != null || event.message.attachments.isNotEmpty()) {
+            parse(sender, url)
             return
         }
 
@@ -71,20 +80,20 @@ class QuoteImportCommand(category: Category, parent: QuoteCommand) : DiscordComm
                 .subscribeOn(Schedulers.parallel())
                 .doOnSubscribe {
                     // send the initial message
-                    event.reply("${event.author.asMention} - Type a URL, attach a file, or type `cancel`")
+                    sender.replyS("Type a URL, attach a file, or type `cancel`", ReplyType.MENTION)
                 }
                 .subscribe({
                     if (it.contentStripped == "cancel") {
                         pendingRequests.remove(event.author)
-                        event.replySuccess("${event.author.asMention} - Import cancelled")
+                        sender.replySuccessS("Import cancelled", ReplyType.MENTION)
                         return@subscribe
                     }
 
-                    parse(event, it.contentDisplay, it)
+                    parse(sender, it.contentDisplay, it)
                 }, {
                     pendingRequests.remove(event.author)
                     if (it is TimeoutException) {
-                        event.replyWarning("${event.author.asMention} - Import timed out")
+                        sender.replyWarningS("Import timed out", ReplyType.MENTION)
                     }
                 })
     }
@@ -107,14 +116,14 @@ class QuoteImportCommand(category: Category, parent: QuoteCommand) : DiscordComm
      * @param event The command event which this request came from.
      * If the request came from interactive mode, this will be the `diabot quote import` event.
      *
-     * @param args Optional. The command's arguments, which should consist of a URL if that is being used.
+     * @param url Optional. The command's arguments, which should consist of a URL if that is being used.
      * If the request came from interactive mode, this will be the second message's contents.
      *
      * @param message Optional. The request's [Message] instance.
      * If the request came from interactive mode, this will be the second message.
      */
-    private fun parse(event: CommandEvent, args: String = event.args, message: Message = event.message) {
-        val mention = event.author.asMention + " -"
+    private fun parse(sender: JDACommandUser, url: String?, message: Message = sender.event.message) {
+        val event = sender.event
         val successful = AtomicLong()
         val failed = AtomicLong()
         val startTime = System.currentTimeMillis()
@@ -122,15 +131,15 @@ class QuoteImportCommand(category: Category, parent: QuoteCommand) : DiscordComm
         val importQuotes = if (message.attachments.isNotEmpty()) {
             getAttachmentsText(message.attachments)
         } else {
-            getUrlText(args)
+            getUrlText(url!!)
         }.subscribeOn(Schedulers.boundedElastic())
                 // Delete the message which has the file/attachment once retrieved and indicate the task started
                 .doFinally {
                     // if we delete their first message then send a new message
                     if (message == event.message) {
-                        event.reply("$mention Starting import task..")
+                        sender.replyS("Starting import task..", ReplyType.MENTION)
                     } else {
-                        event.reactSuccess()
+                        sender.reactSuccessS()
                     }
 
                     message.delete().queue()
@@ -181,11 +190,13 @@ class QuoteImportCommand(category: Category, parent: QuoteCommand) : DiscordComm
                 }
             }
 
-            event.replyError("$mention $errorMessage")
+            sender.replyError(errorMessage, ReplyType.MENTION)
         }, {
             // on finish
             val totalTime = System.currentTimeMillis() - startTime
-            event.replySuccess("$mention Finished importing quotes: ${successful.get()} successful, ${failed.get()} unsuccessful in $totalTime ms.")
+            sender.replySuccessS("Finished importing quotes: ${successful.get()} successful, ${failed.get()} " +
+                    "unsuccessful in $totalTime ms.",
+                    ReplyType.MENTION)
         })
     }
 

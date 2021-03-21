@@ -1,8 +1,14 @@
 package com.dongtronic.diabot.platforms.discord.commands.quote
 
+import cloud.commandframework.annotations.Argument
+import cloud.commandframework.annotations.CommandDescription
+import cloud.commandframework.annotations.CommandMethod
+import cloud.commandframework.annotations.specifier.Greedy
+import com.dongtronic.diabot.commands.Category
+import com.dongtronic.diabot.commands.annotations.*
 import com.dongtronic.diabot.data.mongodb.QuoteDAO
 import com.dongtronic.diabot.data.mongodb.QuoteDTO
-import com.dongtronic.diabot.platforms.discord.commands.DiscordCommand
+import com.dongtronic.diabot.platforms.discord.commands.JDACommandUser
 import com.dongtronic.diabot.util.logger
 import com.jagrosh.jdautilities.command.CommandEvent
 import net.dv8tion.jda.api.EmbedBuilder
@@ -12,53 +18,65 @@ import org.litote.kmongo.eq
 import reactor.core.publisher.Mono
 import java.time.Instant
 
-class QuoteCommand(category: Category) : DiscordCommand(category, null) {
-    val mentionsRegex = Regex("<@!(?<uid>\\d+)>")
-    private val logger = logger()
-
-    init {
-        this.name = "quote"
-        this.help = "Gets saved quotes"
-        this.guildOnly = true
-        this.aliases = arrayOf("q")
-        this.examples = arrayOf("diabot quote", "diabot quote 1337", "diabot quote @Cas")
-        this.children = arrayOf(
-                QuoteAddCommand(category, this),
-                QuoteDeleteCommand(category, this),
-                QuoteEditCommand(category, this),
-                QuoteImportCommand(category, this))
+@ChildCommands(QuoteSubcommands::class, QuoteImportCommand::class)
+class QuoteCommand {
+    companion object {
+        val mentionsRegex = Regex("<@!(?<uid>\\d+)>")
+        private val logger = logger()
     }
 
-    override fun execute(event: CommandEvent) {
-        if (!QuoteDAO.checkRestrictions(event.textChannel, warnDisabledGuild = true, checkQuoteLimit = false)) return
+//    init {
+//        this.name = "quote"
+//        this.help = "Gets saved quotes"
+//        this.guildOnly = true
+//        this.aliases = arrayOf("q")
+//        this.examples = arrayOf("diabot quote", "diabot quote 1337", "diabot quote @Cas")
+//        this.children = arrayOf(
+//                QuoteAddCommand(category, this),
+//                QuoteDeleteCommand(category, this),
+//                QuoteEditCommand(category, this)
+////                QuoteImportCommand(category, this)
+//        )
+//    }
 
-        val args = event.args.split("\\s+".toRegex()).dropLastWhile { it.isEmpty() }.toTypedArray()
+    @GuildOnly
+    @CommandMethod("quote|q [quotequery]")
+    @CommandDescription("Gets saved quotes")
+    @CommandCategory(Category.FUN)
+    @Example(["[quote]", "[quote] 1337", "[quote] @Cas"])
+    fun execute(
+            sender: JDACommandUser,
+            @DisplayName("quote ID/author")
+            @Greedy
+            @Argument("quotequery", description = "The quote ID or author to grab a quote from")
+            quoteQuery: String?
+    ) {
+        val event = sender.event
+        if (!QuoteDAO.checkRestrictions(event.textChannel, warnDisabledGuild = true, checkQuoteLimit = false)) return
 
         val quote = when {
             event.message.mentionedMembers.isNotEmpty() -> {
                 val member = event.message.mentionedMembers.first()
                 getRandomQuote(event.guild.id, QuoteDTO::authorId eq member.id)
             }
-            args.isNotEmpty() -> {
-                if (args.all { it.toLongOrNull() != null }) {
+            quoteQuery != null -> {
+                if (quoteQuery.toLongOrNull() != null) {
                     // may be a quote id
-                    QuoteDAO.getInstance().getQuote(event.guild.id, args[0])
+                    QuoteDAO.getInstance().getQuote(event.guild.id, quoteQuery)
                 } else {
                     // may be a username
-                    val joined = args.joinToString(" ")
-                    getRandomQuote(event.guild.id, QuoteDTO::author eq joined)
+                    getRandomQuote(event.guild.id, QuoteDTO::author eq quoteQuery)
                 }
             }
             else -> getRandomQuote(event.guild.id)
         }
 
         quote.subscribe({
-            val messageStripped = stripMentions(it.message, event)
-            event.reply(createEmbed(it.copy(message = messageStripped)))
+            sender.reply(createEmbed(it)).subscribe()
         }, {
-            event.replyError("Could not find any quote")
+            sender.replyErrorS("Could not find any quote")
             if (it !is NoSuchElementException) {
-                logger.warn("Unexpected error: " + it::class.simpleName + " - " + it.message)
+                logger.warn("Unexpected error when finding quote", it)
             }
         })
     }
@@ -119,35 +137,6 @@ class QuoteCommand(category: Category) : DiscordCommand(category, null) {
      */
     private fun getRandomQuote(guildId: String, filter: Bson? = null): Mono<QuoteDTO> {
         return QuoteDAO.getInstance().getRandomQuote(guildId, filter)
-    }
-
-    /**
-     * Strips a message of mentions for users inside the guild.
-     * Mentions which reference a user who is not in the guild will not be stripped.
-     *
-     * @param message the message to strip of mentions
-     * @param event command event
-     * @return stripped message
-     */
-    private fun stripMentions(message: String, event: CommandEvent): String {
-        var strippedMessage = message
-        val matches = mentionsRegex.findAll(message)
-        // using `toMap` to remove duplicate mentions
-        val uidMap = matches.mapNotNull {
-            val uid = it.groups["uid"]?.value ?: return@mapNotNull null
-            it.value to uid
-        }.toMap()
-
-        // replace the ids with their real names
-        uidMap.mapValues { resolveNameById(it.value, event) }
-                .forEach { (match, id) ->
-                    if (id.isBlank())
-                        return@forEach
-
-                    strippedMessage = strippedMessage.replace(match, "@$id")
-                }
-
-        return strippedMessage
     }
 
     /**

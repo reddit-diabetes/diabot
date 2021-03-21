@@ -1,27 +1,26 @@
 package com.dongtronic.diabot.platforms.discord.commands.misc
 
-import com.dongtronic.diabot.platforms.discord.commands.DiscordCommand
-import com.dongtronic.diabot.util.logger
-import com.jagrosh.jdautilities.command.Command
-import com.jagrosh.jdautilities.command.CommandEvent
+import cloud.commandframework.annotations.CommandDescription
+import cloud.commandframework.annotations.CommandMethod
+import com.dongtronic.diabot.commands.Category
+import com.dongtronic.diabot.commands.annotations.CommandCategory
+import com.dongtronic.diabot.commands.annotations.Cooldown
+import com.dongtronic.diabot.commands.cooldown.CooldownScope
+import com.dongtronic.diabot.platforms.discord.commands.JDACommandUser
+import java.util.concurrent.TimeUnit
 
-class DisclaimerCommand(category: Command.Category) : DiscordCommand(category, null) {
+class DisclaimerCommand {
+    @CommandMethod("disclaimer")
+    @CommandDescription("Show the disclaimer for diabot")
+    @CommandCategory(Category.UTILITIES)
+    @Cooldown(3, TimeUnit.MINUTES, CooldownScope.CHANNEL)
+    fun execute(sender: JDACommandUser) {
+        val text = this::class.java.classLoader.getResource("DISCLAIMER")?.readText()
 
-    private val logger = logger()
-
-    init {
-        this.name = "disclaimer"
-        this.help = "Show the disclaimer for diabot"
-        this.guildOnly = false
-        this.ownerCommand = false
-        this.hidden = false
-        this.cooldown = 180
-        this.cooldownScope = CooldownScope.CHANNEL
-    }
-
-    override fun execute(event: CommandEvent) {
-        val text = this::class.java.classLoader.getResource("DISCLAIMER").readText()
-
-        event.reply(text)
+        if (text != null) {
+            sender.replyS(text)
+        } else {
+            sender.replyErrorS("Disclaimer could not be loaded.")
+        }
     }
 }

@@ -48,8 +48,14 @@ class NameRuleDAO private constructor() {
      */
     fun getGuild(guildId: String): Mono<NameRuleDTO> {
         val cached = ruleCache.getIfPresent(guildId)
-        if (cached != null)
-            return cached.toMono()
+        if (cached != null) {
+            // check if the cached value is the non-enforcing dto
+            return if (cached == NameRuleDTO(guildId)) {
+                NoSuchElementException().toMono()
+            } else {
+                cached.toMono()
+            }
+        }
 
         return collection.findOne(filter(guildId))
                 .subscribeOn(scheduler)

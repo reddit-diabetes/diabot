@@ -1,7 +1,13 @@
 dependencies {
+    // Cloud command framework
+    implementation 'cloud.commandframework:cloud-annotations:1.5.0-SNAPSHOT'
+    implementation 'cloud.commandframework:cloud-jda:1.5.0-SNAPSHOT'
+    implementation 'cloud.commandframework:cloud-core:1.5.0-SNAPSHOT'
+
     // JDA
+    implementation 'com.github.ygimenez:Pagination-Utils:2.1.5'
     implementation 'com.jagrosh:jda-utilities:3.0.4'
-    implementation('net.dv8tion:JDA:4.2.0_209') {
+    implementation('net.dv8tion:JDA:4.2.0_225') {
         exclude module: 'opus-java'
     }
 
@@ -33,6 +39,7 @@ dependencies {
     // Misc
     implementation project(':utilities')
     implementation project(':nightscout-api')
+    implementation project(':bg-graph')
     implementation 'io.projectreactor:reactor-core:3.3.8.RELEASE'
     implementation 'io.projectreactor.kotlin:reactor-kotlin-extensions:1.0.2.RELEASE'
 }

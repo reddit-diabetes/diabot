@@ -1,22 +1,22 @@
 package com.dongtronic.diabot.platforms.discord.commands.admin
 
-import com.dongtronic.diabot.platforms.discord.commands.DiscordCommand
-import com.jagrosh.jdautilities.command.Command
-import com.jagrosh.jdautilities.command.CommandEvent
+import cloud.commandframework.annotations.CommandDescription
+import cloud.commandframework.annotations.CommandMethod
+import com.dongtronic.diabot.commands.Category
+import com.dongtronic.diabot.commands.annotations.CommandCategory
+import com.dongtronic.diabot.commands.annotations.DiscordPermission
+import com.dongtronic.diabot.commands.annotations.GuildOnly
+import com.dongtronic.diabot.platforms.discord.commands.JDACommandUser
 import net.dv8tion.jda.api.Permission
 
-class RolesCommand(category: Command.Category) : DiscordCommand(category, null) {
-
-    init {
-        this.name = "roles"
-        this.help = "Get all roles in the server"
-        this.guildOnly = true
-        this.userPermissions = arrayOf(Permission.ADMINISTRATOR)
-    }
-
-    override fun execute(event: CommandEvent) {
-
-        val guild = event.guild
+class RolesCommand {
+    @GuildOnly
+    @DiscordPermission(Permission.ADMINISTRATOR)
+    @CommandMethod("roles")
+    @CommandDescription("Get all roles in the server")
+    @CommandCategory(Category.ADMIN)
+    fun execute(sender: JDACommandUser) {
+        val guild = sender.event.guild
         val roles = guild.roles
 
         val returned = StringBuilder()
@@ -25,6 +25,6 @@ class RolesCommand(category: Command.Category) : DiscordCommand(category, null) 
             returned.append("\n").append(role.id).append(" - ").append(role.name)
         }
 
-        event.reply(returned.toString())
+        sender.replyS(returned.toString())
     }
 }

@@ -1,48 +1,44 @@
 package com.dongtronic.diabot.platforms.discord.commands.admin
 
-import com.dongtronic.diabot.platforms.discord.commands.DiscordCommand
+import cloud.commandframework.annotations.Argument
+import cloud.commandframework.annotations.CommandDescription
+import cloud.commandframework.annotations.CommandMethod
+import cloud.commandframework.annotations.specifier.Greedy
+import com.dongtronic.diabot.commands.Category
+import com.dongtronic.diabot.commands.annotations.CommandCategory
+import com.dongtronic.diabot.commands.annotations.DiscordPermission
+import com.dongtronic.diabot.commands.annotations.GuildOnly
+import com.dongtronic.diabot.platforms.discord.commands.JDACommandUser
 import com.dongtronic.diabot.util.logger
-import com.jagrosh.jdautilities.command.Command
-import com.jagrosh.jdautilities.command.CommandEvent
 import net.dv8tion.jda.api.Permission
-import org.apache.commons.lang3.StringUtils
+import net.dv8tion.jda.api.entities.MessageChannel
+import net.dv8tion.jda.api.entities.TextChannel
 
-class AdminAnnounceCommand(category: Command.Category, parent: Command?) : DiscordCommand(category, parent) {
-
+class AdminAnnounceCommand {
     private val logger = logger()
 
-    init {
-        this.name = "announce"
-        this.help = "Announce a message in a channel"
-        this.arguments = "<channel> <message>"
-        this.guildOnly = true
-        this.ownerCommand = false
-        this.userPermissions = arrayOf(Permission.ADMINISTRATOR)
-    }
+    @GuildOnly
+    @DiscordPermission(Permission.ADMINISTRATOR)
+    @CommandMethod("admin|a announce <channel> <message>")
+    @CommandDescription("Announce a message in a channel")
+    @CommandCategory(Category.ADMIN)
+    fun execute(
+            sender: JDACommandUser,
+            @Argument("channel", description = "The channel to announce in")
+            channel: MessageChannel,
+            @Greedy
+            @Argument("message", description = "The message to send in the channel")
+            message: String
+    ) {
+        val mention = (if (channel is TextChannel) channel.asMention else channel.name) + " (`${channel.id}`)"
 
-    override fun execute(event: CommandEvent) {
-        val args = event.args.split("\\s+".toRegex()).dropLastWhile { it.isEmpty() }.toTypedArray()
-
-        if (args.size < 2) {
-            event.replyError("Please supply at least 2 arguments (channel ID and message)")
-            return
+        kotlin.runCatching {
+            channel.sendMessage(message).queue()
+        }.onSuccess {
+            sender.replySuccessS("Sent announcement to $mention")
+        }.onFailure {
+            logger.info("Could not send announcement `$message` to channel $mention", it)
+            sender.replyErrorS("Could not send announcement to $mention: ${it.message}")
         }
-        val channel = if (event.message.mentionedChannels.size == 0) {
-            if (!StringUtils.isNumeric(args[0])) {
-                throw IllegalArgumentException("Channel ID must be numeric")
-            }
-
-            val channelId = args[0]
-            event.guild.getTextChannelById(channelId)
-                    ?: throw IllegalArgumentException("Channel `$channelId` does not exist")
-        } else {
-            event.message.mentionedChannels[0]
-        }
-
-        val message = event.args.substringAfter(' ')
-
-        channel.sendMessage(message).queue()
-
-        event.reply("Sent announcement to ${channel.asMention} (`${channel.id}`)")
     }
 }

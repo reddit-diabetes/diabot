@@ -1,47 +1,39 @@
 package com.dongtronic.diabot.platforms.discord.commands.misc
 
+import cloud.commandframework.annotations.Argument
+import cloud.commandframework.annotations.CommandDescription
+import cloud.commandframework.annotations.CommandMethod
+import com.dongtronic.diabot.commands.Category
+import com.dongtronic.diabot.commands.annotations.CommandCategory
+import com.dongtronic.diabot.commands.annotations.Example
 import com.dongtronic.diabot.exceptions.NoSuchEpisodeException
 import com.dongtronic.diabot.logic.`fun`.Diacast
-import com.dongtronic.diabot.platforms.discord.commands.DiscordCommand
-import com.jagrosh.jdautilities.command.Command
-import com.jagrosh.jdautilities.command.CommandEvent
+import com.dongtronic.diabot.platforms.discord.commands.JDACommandUser
 import com.rometools.rome.feed.synd.SyndEntry
 import net.dv8tion.jda.api.EmbedBuilder
-import org.apache.commons.lang3.StringUtils
 
-class DiacastCommand(category: Command.Category) : DiscordCommand(category, null) {
-
-    private val episodes = Diacast.episodes
-
-    init {
-        this.name = "diacast"
-        this.help = "Get information about a diacast episode"
-        this.guildOnly = false
-        this.examples = arrayOf("diabot diacast", "diabot diacast 6")
-    }
-
-    override fun execute(event: CommandEvent) {
-        var episodeNumber = 0
+class DiacastCommand {
+    @Example(["[diacast]", "[diacast] 6"])
+    @CommandMethod("diacast [episode]")
+    @CommandDescription("Get information about a diacast episode")
+    @CommandCategory(Category.FUN)
+    fun execute(
+            sender: JDACommandUser,
+            @Argument("episode", description = "The episode number to grab information about", defaultValue = "0")
+            episodeNumber: Int
+    ) {
         try {
-            val args = event.args.split("\\s+".toRegex()).dropLastWhile { it.isEmpty() }.toTypedArray()
-
-            if (args.isNotEmpty() && StringUtils.isNumeric(args[0])) {
-                episodeNumber = Integer.valueOf(args[0])
-            }
-
             val episode = Diacast.getEpisode(episodeNumber)
 
             val builder = EmbedBuilder()
 
             buildEpisodeCard(episode, builder)
 
-            event.reply(builder.build())
-
+            sender.reply(builder.build()).subscribe()
         } catch (ex: NoSuchEpisodeException) {
-            event.replyError("Episode $episodeNumber does not exist")
-        }
-        catch (ex: Exception) {
-            event.replyError("Something went wrong: " + ex.message)
+            sender.replyErrorS("Episode $episodeNumber does not exist")
+        } catch (ex: Exception) {
+            sender.replyErrorS("Something went wrong: " + ex.message)
         }
 
     }
@@ -62,6 +54,4 @@ class DiacastCommand(category: Command.Category) : DiscordCommand(category, null
 
         }
     }
-
-
 }

@@ -1,41 +1,34 @@
 package com.dongtronic.diabot.platforms.discord.commands.admin
 
-import com.dongtronic.diabot.platforms.discord.commands.DiscordCommand
+import cloud.commandframework.annotations.CommandDescription
+import cloud.commandframework.annotations.CommandMethod
+import cloud.commandframework.annotations.Hidden
+import com.dongtronic.diabot.commands.Category
+import com.dongtronic.diabot.commands.annotations.CommandCategory
+import com.dongtronic.diabot.commands.annotations.NoAutoPermission
+import com.dongtronic.diabot.platforms.discord.commands.JDACommandUser
 import com.dongtronic.diabot.util.logger
-import com.jagrosh.jdautilities.command.Command
-import com.jagrosh.jdautilities.command.CommandEvent
 
 /**
  * @author John Grosh (jagrosh)
  */
-class ShutdownCommand(category: Command.Category) : DiscordCommand(category, null) {
+class ShutdownCommand {
+    private val logger = logger()
 
-    init {
-        this.name = "shutdown"
-        this.help = "safely shuts off the bot"
-        this.guildOnly = false
-        this.ownerCommand = false
-        this.aliases = arrayOf("heckoff", "fuckoff", "removethyself", "remove")
-        this.hidden = true
-    }
-
-    override fun execute(event: CommandEvent) {
-        val userId = event.author.id
-
-        val allowedUsers = System.getenv("superusers").split(",")
-        val allowed = allowedUsers.contains(userId)
+    @Hidden
+    @NoAutoPermission
+    @CommandMethod("shutdown|heckoff|fuckoff|removethyself|remove")
+    @CommandDescription("Safely shuts off the bot")
+    @CommandCategory(Category.ADMIN)
+    fun execute(sender: JDACommandUser) {
+        val allowedUsers = System.getenv()["superusers"]?.split(",") ?: emptyList()
+        val allowed = allowedUsers.contains(sender.getAuthorUniqueId())
 
         if (allowed) {
-            logger.info("Shutting down bot (requested by ${event.author.name} ($userId))")
-            event.replyWarning("Shutting down (requested by ${event.author.name})")
-            event.reactWarning()
-            event.jda.shutdown()
+            logger.info("Shutting down bot (requested by ${sender.getAuthorName()} (${sender.getAuthorUniqueId()}))")
+            sender.replyWarningS("Shutting down (requested by ${sender.getAuthorDisplayName()})")
+            sender.reactWarningS()
+            sender.event.jda.shutdown()
         }
     }
-
-    companion object {
-
-        private val logger = logger()
-    }
-
 }

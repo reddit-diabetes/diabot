@@ -1,19 +1,17 @@
 package com.dongtronic.diabot.platforms.discord.commands.misc
 
-import com.dongtronic.diabot.platforms.discord.commands.DiscordCommand
-import com.jagrosh.jdautilities.command.CommandEvent
+import cloud.commandframework.annotations.CommandDescription
+import cloud.commandframework.annotations.CommandMethod
+import com.dongtronic.diabot.commands.Category
+import com.dongtronic.diabot.commands.annotations.CommandCategory
+import com.dongtronic.diabot.platforms.discord.commands.JDACommandUser
 import net.dv8tion.jda.api.EmbedBuilder
 
-class SupportCommand(category: Category) : DiscordCommand(category, null) {
-
-    init {
-        this.name = "support"
-        this.help = "Get information about supporting Diabot development"
-        this.hidden = false
-        this.guildOnly = false
-    }
-
-    override fun execute(event: CommandEvent) {
+class SupportCommand {
+    @CommandMethod("support")
+    @CommandDescription("Get information about supporting Diabot development")
+    @CommandCategory(Category.INFO)
+    fun execute(sender: JDACommandUser) {
         val builder = EmbedBuilder()
 
         builder.setTitle("Diabot Support")
@@ -25,6 +23,6 @@ class SupportCommand(category: Category) : DiscordCommand(category, null) {
 
         builder.setColor(java.awt.Color.orange)
 
-        event.reply(builder.build())
+        sender.reply(builder.build()).subscribe()
     }
 }
